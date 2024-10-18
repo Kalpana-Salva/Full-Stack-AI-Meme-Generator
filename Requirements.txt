@@ -1,4 +1,76 @@
-openai>=1.6.1
-stability-sdk>=0.8.5
-pillow>=10.1.0
-requests>=2.31.0
+from flask import Flask, request, jsonify, send_file
+import openai
+import requests
+from stability_sdk import client
+from PIL import Image, ImageDraw, ImageFont
+from io import BytesIO
+import os
+
+app = Flask(__name__)
+
+# Load your OpenAI and Stability API keys
+openai.api_key = os.getenv("OPENAI_API_KEY")
+stability_api_key = os.getenv("STABILITY_API_KEY")
+stability_api = client.StabilityInference(key=stability_api_key)
+
+# Generate meme text using OpenAI
+@app.route('/generate-text', methods=['POST'])
+def generate_text():
+    prompt = request.json.get('prompt', '')
+    response = openai.Completion.create(
+        engine="text-davinci-003",
+        prompt=prompt,
+        max_tokens=50
+    )
+    generated_text = response.choices[0].text.strip()
+    return jsonify({'text': generated_text})
+
+# Generate meme image using Stability AI
+@app.route('/generate-image', methods=['POST'])
+def generate_image():
+    prompt = request.json.get('prompt', '')
+    response = stability_api.generate(prompt=prompt)
+
+    # Extract image bytes from the API response
+    for resp in response:
+        for artifact in resp.artifacts:
+            if artifact.finish_reason == "SUCCESS":
+                img_data = artifact.binary
+                img = Image.open(BytesIO(img_data))
+                return serve_pil_image(img)
+
+def serve_pil_image(pil_img):
+    img_io = BytesIO()
+    pil_img.save(img_io, 'PNG')
+    img_io.seek(0)
+    return send_file(img_io, mimetype='image/png')
+
+# Add text to the image (Meme Caption)
+@app.route('/add-caption', methods=['POST'])
+def add_caption():
+    image_url = request.json.get('image_url', '')
+    top_text = request.json.get('top_text', '')
+    bottom_text = request.json.get('bottom_text', '')
+
+    response = requests.get(image_url)
+    img = Image.open(BytesIO(response.content))
+
+    # Add the meme text using Pillow
+    draw = ImageDraw.Draw(img)
+    font = ImageFont.truetype("arial.ttf", 40)  # Adjust font path and size
+    width, height = img.size
+
+    # Add top and bottom text
+    draw_text(draw, font, top_text, (width / 2, 0), img.size)
+    draw_text(draw, font, bottom_text, (width / 2, height - 50), img.size)
+
+    return serve_pil_image(img)
+
+def draw_text(draw, font, text, position, image_size):
+    text_width, text_height = draw.textsize(text, font=font)
+    x = position[0] - text_width / 2
+    y = position[1]
+    draw.text((x, y), text, font=font, fill="white")
+
+if __name__ == '__main__':
+    app.run(debug=True)
